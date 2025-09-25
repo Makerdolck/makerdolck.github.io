@@ -35,22 +35,32 @@
   let w, h, dpr = 1, paused = false, t = 0;
   const TAU = Math.PI * 2;
 
-  // ---------- настройки ----------
+  // ------------------- настройки -------------------
   const CFG = {
-    baseScale: 0.36,   // размер сущности относительно min(w,h)
-    steps: 140,        // детализация контура
-    morph: 0.26,       // «рваность» формы (0..0.4)
-    trail: 0.07,       // шлейф фона
-    // "краски" внутри
-    dyes: 6,
-    dyeRadius: 0.55,   // относительный радиус пятен (относительно базового)
-    flowK: 1.7,        // частота поля потока
-    flowSpeed: 0.42,   // скорость потока
-    hueBase: 210,      // базовый оттенок палитры
-    hueSpan: 140,      // размах оттенков
+    // форма и движение сущности
+    baseScale: 0.37,      // базовый размер от min(w,h)
+    steps: 140,           // детализация контура
+    morphA: 0.26,         // «рваность» формы (1D-шума)
+    morphB: 0.18,         // вклад «щупалец» (импульсы по углу)
+    breath: 0.08,         // дыхание (общий пульс)
+    maskBlur: 22,         // мягкость края
+    maskContrast: 130,    // контраст маски
+    trail: 0.075,         // шлейф фона
+
+    // блуждание центра по curl-noise
+    flowK: 1.3,           // частота поля
+    flowSpeed: 0.35,      // скорость поля
+    centerDrift: 80,      // амплитуда шага центра (px/с)
+
+    // краски внутри
+    dyes: 7,
+    dyeRadius: 0.66,      // размер цветных пятен (от Rbase)
+    hueBase: 210,         // базовый оттенок
+    hueSpan: 160,         // размах оттенков
+    hueJitter: 18,        // локальная «температура» цвета (°/с)
   };
 
-  // offscreen для маски и цвета
+  // ---------------- offscreen буферы ----------------
   const mask = document.createElement('canvas');
   const mx   = mask.getContext('2d');
   const col  = document.createElement('canvas');
@@ -60,7 +70,7 @@
     dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
     w = c.width  = Math.floor(innerWidth  * dpr);
     h = c.height = Math.floor(innerHeight * dpr);
-    c.style.width = innerWidth + 'px';
+    c.style.width  = innerWidth  + 'px';
     c.style.height = innerHeight + 'px';
     mask.width = col.width = w;
     mask.height = col.height = h;
@@ -68,105 +78,137 @@
   addEventListener('resize', resize, {passive:true});
   resize();
 
-  // -------- форма одной сущности --------
-  // гладкий псевдо-шум без тяжёлых библиотек
-  function n1(x){ return Math.sin(x) * 0.5 + 0.5; }
-  function smoothNoise(theta, time, a, b, c) {
-    // несколько гармоник -> «органичный» шум
-    return (
-      0.55 * n1(theta * a + time * 0.8) +
-      0.30 * n1(theta * b - time * 0.6) +
-      0.15 * n1(theta * c + time * 0.35)
-    );
+  // ------------- утилиты шума / curl-noise ----------
+  function fract(x){ return x - Math.floor(x); }
+  function hash(x,y){ return fract(Math.sin(x*127.1 + y*311.7)*43758.5453); }
+  function noise2(x,y){
+    const xi=Math.floor(x), yi=Math.floor(y);
+    const xf=x-xi, yf=y-yi;
+    const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+    const n00=hash(xi,yi), n10=hash(xi+1,yi), n01=hash(xi,yi+1), n11=hash(xi+1,yi+1);
+    return (1-u)*(1-v)*n00 + u*(1-v)*n10 + (1-u)*v*n01 + u*v*n11;
   }
-  function pathShape(g) {
-    const cx = w * 0.5, cy = h * 0.5;
-    const R0 = Math.min(w, h) * CFG.baseScale;
+  function fbm(x,y){
+    let a=0.5, f=1.0, s=0.0;
+    for(let i=0;i<4;i++){ s += a*noise2(x*f, y*f); a*=0.5; f*=2.02; }
+    return s;
+  }
+  function curl(x,y,time){
+    // поле от скалярного fbm; curl ~ (df/dy, -df/dx)
+    const k = CFG.flowK;
+    const e = 0.002;
+    const f  = (xx,yy)=>fbm(k*xx + time*CFG.flowSpeed, k*yy - time*CFG.flowSpeed*1.17);
+    const dx = (f(x+e,y)-f(x-e,y))/(2*e);
+    const dy = (f(x,y+e)-f(x,y-e))/(2*e);
+    return { vx: dy, vy: -dx };
+  }
+
+  // --------- состояние сущности: центр + «щупальца» ---------
+  let center = { x: w*0.5, y: h*0.5 };
+  const spikes = Array.from({length: 4}, ()=>({
+    ang: Math.random()*TAU,
+    w:   0.35 + Math.random()*0.4,   // ширина по углу
+    amp: 0.55 + Math.random()*0.9,   // сила вытягивания
+    speed: (Math.random()*2-1)*0.35  // скорость вращения
+  }));
+
+  // --------- краски (локально меняют оттенок) ---------
+  const dyes = Array.from({length: CFG.dyes}, (_,i)=>{
+    const a = (i/CFG.dyes)*TAU;
+    return {
+      x: center.x + Math.cos(a)*Math.min(w,h)*0.12,
+      y: center.y + Math.sin(a)*Math.min(w,h)*0.12,
+      hue0: (CFG.hueBase + (i/(CFG.dyes-1)||0)*CFG.hueSpan)%360,
+      hue: 0,  // динамическая добавка
+      drift: Math.random()*TAU
+    };
+  });
+
+  // --------- форма одной сущности ----------
+  function pathShape(g, time){
+    const cx = center.x, cy = center.y;
+    const R0 = Math.min(w,h) * CFG.baseScale * (1 + Math.sin(time*0.9)*CFG.breath*0.5
+                                                  + Math.sin(time*0.53+1.2)*CFG.breath*0.5);
     g.beginPath();
-    for (let i = 0; i <= CFG.steps; i++) {
-      const th = (i / CFG.steps) * TAU;
-      const m = (smoothNoise(th, t, 2.0, 3.0, 5.0) - 0.5) * 2 * CFG.morph;
-      const R = R0 * (1 + m);
-      const x = cx + Math.cos(th) * R;
-      const y = cy + Math.sin(th) * R;
-      (i ? g.lineTo(x, y) : g.moveTo(x, y));
+    for (let i=0; i<=CFG.steps; i++){
+      const th = (i/CFG.steps)*TAU;
+
+      // 1) «плавная рваность» (дешёвый 1D шум по углу)
+      const mA = (Math.sin(th*2.0 + time*0.8) +
+                  0.6*Math.sin(th*3.1 - time*0.6) +
+                  0.3*Math.sin(th*5.2 + time*0.35)) * 0.5;
+
+      // 2) «щупальца» — сумма движущихся импульсов по углу
+      let mB = 0;
+      for(const s of spikes){
+        const d = Math.atan2(Math.sin(th-s.ang), Math.cos(th-s.ang)); // разность углов (-pi..pi)
+        mB += s.amp * Math.exp(-(d*d)/(2*s.w*s.w));
+      }
+      const R = R0 * (1 + CFG.morphA*mA + CFG.morphB*mB);
+
+      const x = cx + Math.cos(th)*R;
+      const y = cy + Math.sin(th)*R;
+      (i? g.lineTo(x,y) : g.moveTo(x,y));
     }
     g.closePath();
   }
 
-  // -------- поле потока (вихревое, несжимаемое) --------
-  // берём скалярное поле f; скорость = (df/dy, -df/dx)
-  function flow(x, y, time) {
-    // нормализуем к [-1,1]
-    const nx = (x / w) * 2 - 1;
-    const ny = (y / h) * 2 - 1;
-    const k = CFG.flowK, w1 = CFG.flowSpeed;
+  // --------- динамика центра/щупалец/красок ----------
+  function stepDynamics(dt){
+    // центр плывёт по curl-noise
+    const v = curl(center.x/w, center.y/h, t);
+    center.x += v.vx * CFG.centerDrift * dt;
+    center.y += v.vy * CFG.centerDrift * dt;
+    // мягко притягиваем к середине, чтобы не уползал за экран
+    center.x += (w*0.5 - center.x) * 0.6 * dt;
+    center.y += (h*0.5 - center.y) * 0.6 * dt;
 
-    const f  = Math.sin(k*nx + time*w1)
-             + Math.sin(k*ny - time*w1*1.2)
-             + 0.5*Math.sin(k*(nx+ny) + time*w1*0.7);
-
-    const dfdx = k * ( Math.cos(k*nx + time*w1) + 0.5*Math.cos(k*(nx+ny) + time*w1*0.7) );
-    const dfdy = k * ( Math.cos(k*ny - time*w1*1.2) + 0.5*Math.cos(k*(nx+ny) + time*w1*0.7) );
-
-    // curl(f) = (df/dy, -df/dx)
-    return { vx: dfdy, vy: -dfdx };
-  }
-
-  // «красочки» внутри (они только цвет, форму не задают)
-  const dyes = Array.from({length: CFG.dyes}, (_, i) => {
-    const a = (i / CFG.dyes) * TAU;
-    const R = Math.min(w, h) * CFG.baseScale * 0.35;
-    return {
-      x: w*0.5 + Math.cos(a)*R,
-      y: h*0.5 + Math.sin(a)*R,
-      hue: (CFG.hueBase + (i/(CFG.dyes-1)||0)*CFG.hueSpan) % 360,
-      phase: Math.random()*TAU
-    };
-  });
-
-  function updateDyes(dt) {
-    for (const d of dyes) {
-      const v = flow(d.x, d.y, t + Math.sin(d.phase)*0.5);
-      d.x += v.vx * dt * 120;     // масштаб скорости
-      d.y += v.vy * dt * 120;
-
-      // мягкое возвращение внутрь, если улетает
-      const cx = w*0.5, cy = h*0.5;
-      d.x += (cx - d.x) * 0.02 * dt * 60;
-      d.y += (cy - d.y) * 0.02 * dt * 60;
+    // щупальца медленно вращаются и «дышат»
+    for(const s of spikes){
+      s.ang += s.speed * dt;
+      s.amp += (Math.sin(t*0.7 + s.w*3) * 0.5 - s.amp) * 0.15 * dt; // плавные всплески
     }
-  }
 
-  function paintColors() {
-    cx2.clearRect(0,0,w,h);
+    // «краски»: текут по тому же полю + локальная смена оттенка
     const R0 = Math.min(w,h) * CFG.baseScale * CFG.dyeRadius;
-
-    // несколько проходов для глубины
-    for (const d of dyes) {
-      const hue = (d.hue + Math.sin(t*0.6 + d.phase)*18) % 360;
-      const g = cx2.createRadialGradient(d.x, d.y, R0*0.1, d.x, d.y, R0);
-      g.addColorStop(0.0, `hsla(${hue}, 90%, 62%, 0.42)`);
-      g.addColorStop(1.0, `hsla(${(hue+40)%360}, 80%, 40%, 0.02)`);
-      cx2.globalCompositeOperation = 'screen';
-      cx2.fillStyle = g;
-      cx2.beginPath();
-      cx2.arc(d.x, d.y, R0, 0, TAU);
-      cx2.fill();
+    for(const d of dyes){
+      const vv = curl(d.x/w, d.y/h, t + Math.sin(d.drift)*0.5);
+      d.x += vv.vx * 110 * dt;
+      d.y += vv.vy * 110 * dt;
+      // подпружинивание к центру, чтобы краска не убегала к краю
+      d.x += (center.x - d.x) * 0.9 * dt;
+      d.y += (center.y - d.y) * 0.9 * dt;
+      // локальная смена цвета: случайный блуждающий тон
+      d.hue += (Math.random()*2-1) * CFG.hueJitter * dt;
     }
   }
 
-  function buildMask() {
+  // --------- рендер: маска -> цвет -> обрезка ----------
+  function buildMask(){
     mx.clearRect(0,0,w,h);
     mx.fillStyle = '#fff';
-    pathShape(mx);
-    mx.filter = 'blur(16px) contrast(130%)'; // мягкий край
+    pathShape(mx, t);
+    mx.filter = `blur(${CFG.maskBlur}px) contrast(${CFG.maskContrast}%)`;
     mx.fill();
     mx.filter = 'none';
   }
 
+  function paintColors(){
+    cx2.clearRect(0,0,w,h);
+    const R = Math.min(w,h) * CFG.baseScale * CFG.dyeRadius;
+    for(const d of dyes){
+      const hue = (d.hue0 + d.hue) % 360;
+      const g = cx2.createRadialGradient(d.x, d.y, R*0.06, d.x, d.y, R);
+      g.addColorStop(0.0, `hsla(${hue}, 92%, 62%, 0.40)`);
+      g.addColorStop(1.0, `hsla(${(hue+38)%360}, 80%, 40%, 0.02)`);
+      cx2.globalCompositeOperation = 'screen';
+      cx2.fillStyle = g;
+      cx2.beginPath(); cx2.arc(d.x, d.y, R, 0, TAU); cx2.fill();
+    }
+  }
+
   let prev = performance.now();
-  function frame(now) {
+  function frame(now){
     if (paused) return;
     const dt = Math.min(0.033, (now - prev)/1000); prev = now; t += dt;
 
@@ -176,19 +218,16 @@
     ctx.fillStyle = `rgba(0,0,0,${CFG.trail})`;
     ctx.fillRect(0,0,w,h);
 
-    // 1) маска одной сущности
+    stepDynamics(dt);
     buildMask();
-
-    // 2) цвет внутри (перетекающие краски)
     paintColors();
 
-    // 3) обрезаем цвет маской и рисуем на экран
+    // обрезаем цвет маской
     cx2.globalCompositeOperation = 'destination-in';
     cx2.drawImage(mask, 0, 0);
-    cx2.globalCompositeOperation = 'screen'; // восстановим на следующий кадр
+    cx2.globalCompositeOperation = 'screen';
     ctx.drawImage(col, 0, 0);
 
-    updateDyes(dt);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
@@ -201,6 +240,7 @@
   addEventListener('mousedown', toggle);
 })();
 </script>
+
 
 
 
