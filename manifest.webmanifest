@@ -6,6 +6,10 @@
   "background_color": "#000000",
   "theme_color": "#000000",
   "icons": [
-    { "src": "/icon.png", "sizes": "180x180", "type": "image/png" }
+    {
+      "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABF0lEQVR4nO3SsQ0AIAwDQf9/aXdoEDQSzJQLmQUyGqNrYwCAAAAg4Lt+nz9+PgAAAMBB0Hv376+fv38/AQAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAOCl12YBAAAAwMi8HGQNAgAAAOChYwAAAIABDgAAAIBABwAAAAgGDgAAAIAABwAAAAiGvH9YBglWk34AAAAASUVORK5CYII=",
+      "sizes": "256x256",
+      "type": "image/png"
+    }
   ]
 }

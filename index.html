@@ -4,7 +4,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Lofi Visual Flow">
-<link rel="apple-touch-icon" href="icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABF0lEQVR4nO3SsQ0AIAwDQf9/aXdoEDQSzJQLmQUyGqNrYwCAAAAg4Lt+nz9+PgAAAMBB0Hv376+fv38/AQAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAODFge/fv1+3bw8AAAAQHoLz9+/fH79+PwAAAOCl12YBAAAAwMi8HGQNAgAAAOChYwAAAIABDgAAAIBABwAAAAgGDgAAAIAABwAAAAiGvH9YBglWk34AAAAASUVORK5CYII=">
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Lofi Visual Flow</title>
@@ -34,7 +35,7 @@
 </style>
 <link rel="manifest" href="/manifest.webmanifest">
 <script>
-  if ('serviceWorker' in navigator) {
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js', { scope:'./' })
       .then(r => console.log('SW registered:', r.scope))
       .catch(e => console.warn('SW registration failed:', e));
@@ -46,19 +47,104 @@
 
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
-<script type="text/babel" data-presets="react" src="./goo_aura_react_web_gl_glow_blob_that_morphs_and_shifts_colors.jsx"></script>
-<script type="text/babel" data-presets="react">
-  const rootElement = document.getElementById('root');
-  const root = ReactDOM.createRoot(rootElement);
-  root.render(
-    <GooAura
-      style={{ width: '100%', height: '100%' }}
-      speed={1}
-      spikes={0.6}
-      blobs={5}
-    />
-  );
+<script>
+  // Fallback if CDN fails or offline
+  if (!window.React || !window.ReactDOM) {
+    console.warn('React CDN failed, loading fallback canvas animation');
+    document.addEventListener('DOMContentLoaded', function() {
+      const root = document.getElementById('root');
+      if (!root) return;
+      
+      const canvas = document.createElement('canvas');
+      canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border-radius:16px;';
+      root.appendChild(canvas);
+      
+      const ctx = canvas.getContext('2d');
+      let animId;
+      
+      function resize() {
+        const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+        canvas.width = root.clientWidth * dpr;
+        canvas.height = root.clientHeight * dpr;
+      }
+      
+      function animate() {
+        const w = canvas.width, h = canvas.height;
+        const t = performance.now() * 0.001;
+        
+        ctx.fillStyle = 'rgba(0,0,0,0.1)';
+        ctx.fillRect(0, 0, w, h);
+        
+        const cx = w * 0.5, cy = h * 0.5, r = Math.min(w, h) * 0.2;
+        const g = ctx.createRadialGradient(cx, cy, r*0.1, cx, cy, r*1.5);
+        g.addColorStop(0, '#ffd400');
+        g.addColorStop(0.6, '#ff7a00');
+        g.addColorStop(0.8, '#d400a6');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = 0; i < 5; i++) {
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(t * 0.3 + i * 1.2);
+          ctx.translate(Math.sin(t * 0.7 + i) * r * 0.3, Math.cos(t * 0.9 + i) * r * 0.3);
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(0, 0, r * (0.8 + 0.2 * Math.sin(t + i)), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+        ctx.globalCompositeOperation = 'source-over';
+        
+        animId = requestAnimationFrame(animate);
+      }
+      
+      window.addEventListener('resize', resize);
+      resize();
+      animate();
+      
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          cancelAnimationFrame(animId);
+        } else {
+          animId = requestAnimationFrame(animate);
+        }
+      });
+    });
+  }
+</script>
+<script src="./goo_aura_react_web_gl_glow_blob_that_morphs_and_shifts_colors.js" onerror="console.warn('GooAura component failed to load')"></script>
+<script>
+  function initGooAura() {
+    const rootElement = document.getElementById('root');
+    if (!rootElement) return;
+    
+    if (window.React && window.ReactDOM && window.GooAura) {
+      try {
+        const root = ReactDOM.createRoot(rootElement);
+        root.render(
+          React.createElement(window.GooAura, {
+            style: { width: '100%', height: '100%' },
+            speed: 1,
+            spikes: 0.6,
+            blobs: 5,
+          })
+        );
+        console.log('GooAura React component loaded successfully');
+      } catch (err) {
+        console.warn('React render failed:', err);
+      }
+    } else {
+      console.log('Using fallback canvas animation');
+    }
+  }
+  
+  // Try to initialize after DOM and scripts load
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(initGooAura, 100));
+  } else {
+    setTimeout(initGooAura, 100);
+  }
 </script>
 
 </body>
