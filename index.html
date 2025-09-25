@@ -9,32 +9,39 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Calm Flow</title>
 <style>
-  html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#000; }
-  body { overscroll-behavior:none; }
+html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#000; }
+  body { overscroll-behavior:none; color-scheme: dark; }
+  canvas { touch-action: none; user-select: none; }
   #hint { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
           font-size: 12px; color: rgba(255,255,255,0.6); user-select:none; }
+  #pp { position:fixed; right:14px; bottom:14px; z-index:3; width:44px; height:44px;
+        border-radius:50%; background:rgba(255,255,255,.08);
+        border:1px solid rgba(255,255,255,.12); color:#fff; backdrop-filter:blur(8px);
+        cursor:pointer; }
 </style>
 <link rel="manifest" href="/manifest.webmanifest">
 <script>
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js');
+    navigator.serviceWorker.register('./sw.js', { scope:'./' })
+      .then(r => console.log('SW registered:', r.scope))
+      .catch(e => console.warn('SW registration failed:', e));
   }
 </script>
 </head>
 <body>
 <canvas id="c"></canvas>
-<!--<div id="hint">Tip: Add to Home Screen for fullscreen · Tap to pause/play</div>-->
-
 
   
 <script>
 (function () {
   const c = document.getElementById('c');
-  const ctx = c.getContext('2d');
+  const ctx = c.getContext('2d', { alpha:false, desynchronized:true });
 
   let w, h, dpr = 1, paused = false, t = 0;
-  const TAU = Math.PI * 2;
+  let cw = 0, ch = 0;                // размеры offscreen
+  const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+   const TAU = Math.PI * 2;
 
   // ——— Параметры спокойной анимации ———
   const CFG = {
@@ -68,16 +75,30 @@
     streaksPerFrame: 0   // без «лучей» для релакса
   };
 
+  // понижение разрешения offscreen ради blur/contrast
+  let SCALE = 0.66; // 66% от экрана, можно 0.5 на слабых устройствах
+  
   // offscreen
   const mask = document.createElement('canvas'); const mx = mask.getContext('2d');
   const col  = document.createElement('canvas'); const cx2 = col.getContext('2d');
 
+  // фичедетект: поддержка canvas.filter
+  const supportsCanvasFilter = (() => {
+    const test = document.createElement('canvas').getContext('2d');
+    try { test.filter = 'blur(1px) contrast(120%)'; return (''+test.filter).includes('blur'); }
+    catch { return false; }
+  })();
+  
   function resize(){
     dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
     w = c.width  = Math.floor(innerWidth*dpr);
     h = c.height = Math.floor(innerHeight*dpr);
     c.style.width = innerWidth+'px'; c.style.height = innerHeight+'px';
-    mask.width = col.width = w; mask.height = col.height = h;
+    cw = Math.floor(w * SCALE);
+    ch = Math.floor(h * SCALE);
+    mask.width = col.width = cw; mask.height = col.height = ch;
+    // адаптация blur под DPR/scale
+    CFG.maskBlur = Math.round( (28 / dpr) * (SCALE < 1 ? SCALE : 1) );
   }
   addEventListener('resize', resize, {passive:true}); resize();
 
@@ -170,35 +191,45 @@
   }
 
   function buildMask(time){
-    const R0 = Math.min(w,h)*CFG.baseScale * (1 + Math.sin(time*0.8)*CFG.breath*0.5 + Math.sin(time*0.47+1.1)*CFG.breath*0.5);
-    mx.clearRect(0,0,w,h);
+    const sx = cw / w, sy = ch / h;
+    const cx = center.x * sx, cy = center.y * sy;
+    const R0 = Math.min(cw,ch)*CFG.baseScale * (1 + Math.sin(time*0.8)*CFG.breath*0.5 + Math.sin(time*0.47+1.1)*CFG.breath*0.5);
+    mx.globalCompositeOperation = 'source-over';
+    mx.clearRect(0,0,cw,ch);
     mx.beginPath();
     for(let i=0;i<=CFG.steps;i++){
       const th=(i/CFG.steps)*TAU;
       const R = radiusAt(th, R0, time);
-      const x = center.x + Math.cos(th)*R;
-      const y = center.y + Math.sin(th)*R;
+      const x = cx + Math.cos(th)*R;
+      const y = cy + Math.sin(th)*R;
       (i? mx.lineTo(x,y) : mx.moveTo(x,y));
     }
     mx.closePath();
     mx.fillStyle='#fff';
-    mx.filter = `blur(${CFG.maskBlur}px) contrast(${CFG.maskContrast}%)`;
-    mx.fill();
-    mx.filter='none';
+    if (supportsCanvasFilter) {
+      mx.filter = `blur(${CFG.maskBlur}px) contrast(${CFG.maskContrast}%)`;
+      mx.fill();
+      mx.filter='none';
+    } else {
+      mx.globalAlpha = 0.95; mx.fill(); mx.globalAlpha = 1;
+    }
   }
 
   function paintColors(time){
-    cx2.clearRect(0,0,w,h);
-    const Rb = Math.min(w,h)*CFG.baseScale;
+    const sx = cw / w, sy = ch / h;
+    cx2.globalCompositeOperation = 'source-over';
+    cx2.clearRect(0,0,cw,ch);
+    const Rb = Math.min(cw,ch)*CFG.baseScale;
     for(const d of dyes){
+      const x = d.x * sx, y = d.y * sy;
       const rr = Rb * d.r;
-      const g = cx2.createRadialGradient(d.x,d.y, rr*0.06, d.x,d.y, rr);
+      const g = cx2.createRadialGradient(x,y, rr*0.06, x,y, rr);
       const hue = (d.hue0 + d.hueAdd) % 360;
       g.addColorStop(0.0, `hsla(${hue}, 92%, 60%, 0.32)`); // чуть ниже яркость
       g.addColorStop(1.0, `hsla(${(hue+38)%360}, 80%, 40%, 0.02)`);
       cx2.globalCompositeOperation='screen';
       cx2.fillStyle=g;
-      cx2.beginPath(); cx2.arc(d.x,d.y, rr, 0, TAU); cx2.fill();
+      cx2.beginPath(); cx2.arc(x,y, rr, 0, TAU); cx2.fill();
     }
   }
 
@@ -211,7 +242,7 @@
     const dt = rawDt * CFG.timeScale;
     t += dt;
 
-    // фон/шлейф
+    // фон/шлейф на основном канвасе
     ctx.globalCompositeOperation='source-over';
     ctx.globalAlpha=1;
     ctx.fillStyle=`rgba(0,0,0,${CFG.trail})`;
@@ -224,15 +255,30 @@
     cx2.globalCompositeOperation='destination-in';
     cx2.drawImage(mask,0,0);
     cx2.globalCompositeOperation='screen';
-    ctx.drawImage(col,0,0);
+    // апскейл в основной канвас
+    ctx.drawImage(col,0,0,w,h);
 
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
   function toggle(){ paused=!paused; if(!paused){ prev=performance.now(); requestAnimationFrame(frame);} }
-  addEventListener('touchstart', toggle);
-  addEventListener('mousedown', toggle);
+  document.getElementById('pp').addEventListener('click', toggle, {passive:true});
+  addEventListener('keydown', (e)=>{ if(e.code==='Space'||e.code==='KeyP'){ e.preventDefault(); toggle(); }});
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && !paused) toggle();
+    else if (!document.hidden && paused) toggle();
+  });
+  if (prefersReduced) {
+    paused = true;
+    // статический кадр
+    stepDynamics(0, 0);
+    buildMask(0);
+    paintColors(0);
+    cx2.globalCompositeOperation='destination-in';
+    cx2.drawImage(mask,0,0);
+    ctx.drawImage(col,0,0,w,h);
+  }
 })();
 </script>
 
