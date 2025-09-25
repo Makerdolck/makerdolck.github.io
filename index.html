@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Calm Flow</title>
+<style>
+  html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#000; }
+  body { overscroll-behavior:none; }
+  #hint { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+          font-size: 12px; color: rgba(255,255,255,0.6); user-select:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Tip: Add to Home Screen for fullscreen · Tap to pause/play</div>
+<script>
+(function(){
+  const c = document.getElementById('c');
+  const ctx = c.getContext('2d');
+  let w, h, dpr, paused = false;
+  const TWO_PI = Math.PI * 2;
+  let t = 0;
+  const blobs = Array.from({length: 4}, (_,i)=> ({
+    r: 0.22 + 0.1 * Math.random(),
+    s: 0.6 + 0.4*Math.random(),
+    a: Math.random()*TWO_PI,
+    hue: (i*90 + 200 + Math.random()*30)%360
+  }));
+
+  function resize(){
+    dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    w = c.width  = Math.floor(innerWidth * dpr);
+    h = c.height = Math.floor(innerHeight * dpr);
+    c.style.width = innerWidth + 'px';
+    c.style.height = innerHeight + 'px';
+  }
+  window.addEventListener('resize', resize, {passive:true});
+  resize();
+
+  function lerp(a,b,t){ return a+(b-a)*t; }
+
+  function draw(){
+    if(paused) return;
+    t += 0.003;
+    // subtle fade to create trails
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(0,0,0,0.06)';
+    ctx.fillRect(0,0,w,h);
+
+    // draw soft radial blobs with additive blending
+    ctx.globalCompositeOperation = 'lighter';
+
+    const cx = w*0.5, cy = h*0.5;
+    const rBase = Math.min(w,h)*0.35;
+
+    for(const b of blobs){
+      const x = cx + Math.cos(b.a + t*b.s*1.3) * rBase * b.r * 0.9;
+      const y = cy + Math.sin(b.a + t*b.s)     * rBase * b.r;
+      const gr = ctx.createRadialGradient(x,y,0, x,y, rBase*0.9);
+      const hue = (b.hue + Math.sin(t*0.7 + b.a)*20) % 360;
+      gr.addColorStop(0, `hsla(${hue}, 80%, 60%, 0.60)`);
+      gr.addColorStop(1, `hsla(${(hue+40)%360}, 80%, 30%, 0.02)`);
+      ctx.fillStyle = gr;
+      ctx.beginPath();
+      ctx.arc(x, y, rBase, 0, TWO_PI);
+      ctx.fill();
+    }
+    requestAnimationFrame(draw);
+  }
+
+  let raf = requestAnimationFrame(draw);
+  function toggle(){
+    paused = !paused;
+    if(!paused) requestAnimationFrame(draw);
+  }
+  window.addEventListener('touchstart', toggle);
+  window.addEventListener('mousedown', toggle);
+})();
+</script>
+</body>
+</html>
