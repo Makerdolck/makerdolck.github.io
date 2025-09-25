@@ -12,12 +12,24 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { 
-    width: 100%; height: 100%; overflow: hidden; background: #000;
-    overscroll-behavior: none; color-scheme: dark;
+    width: 100%; height: 100%; background: #000; color-scheme: dark;
+    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
   }
-  canvas { 
-    width: 100%; height: 100%;
-    touch-action: none; user-select: none; 
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+  }
+  #root {
+    width: min(92vw, 960px);
+    height: min(90vh, 720px);
+    max-width: 1100px;
+    max-height: 860px;
+  }
+  @media (max-width: 600px) {
+    body { padding: 16px; }
+    #root { width: 100%; height: 70vh; }
   }
 </style>
 <link rel="manifest" href="/manifest.webmanifest">
@@ -30,239 +42,23 @@
 </script>
 </head>
 <body>
-<canvas id="c"></canvas>
+<div id="root"></div>
 
-<script>
-(function() {
-  const canvas = document.getElementById('c');
-  const ctx = canvas.getContext('2d', { 
-    alpha: false, 
-    desynchronized: true 
-  });
-
-  let width, height, dpr = 1;
-  const TAU = Math.PI * 2;
-  let time = 0;
-
-  // Конфигурация для многослойной системы
-  const CONFIG = {
-    timeScale: 0.3,
-    blobCount: 5,
-    trailOpacity: 0.05,
-    
-    // Цветовая палитра
-    colorPalette: [
-      { h: 280, s: 60, l: 65 }, // Фиолетовый
-      { h: 200, s: 70, l: 70 }, // Синий
-      { h: 160, s: 55, l: 60 }, // Бирюзовый
-      { h: 320, s: 65, l: 70 }, // Розовый
-      { h: 40,  s: 60, l: 75 }, // Оранжевый
-      { h: 120, s: 50, l: 65 }  // Зеленый
-    ]
-  };
-
-  // Утилиты
-  function random(min, max) {
-    return min + Math.random() * (max - min);
-  }
-
-  function noise(x, y, t) {
-    return Math.sin(x * 1.2 + t) * Math.cos(y * 1.3 - t * 0.7);
-  }
-
-  // Класс для одной кляксы
-  class Blob {
-    constructor() {
-      this.x = random(0.2, 0.8);
-      this.y = random(0.2, 0.8);
-      this.vx = random(-0.05, 0.05);
-      this.vy = random(-0.05, 0.05);
-      this.baseRadius = random(0.08, 0.25);
-      this.speed = random(0.1, 0.4);
-      this.colorSpeed = random(0.05, 0.2);
-      
-      // Волны для формы
-      this.waveCount = Math.floor(random(3, 8));
-      this.waves = Array.from({ length: this.waveCount }, () => ({
-        phase: Math.random() * TAU,
-        frequency: random(1, 4),
-        amplitude: random(0.2, 0.8),
-        speed: random(0.3, 1.0)
-      }));
-      
-      // Цвет
-      this.colorIndex = Math.floor(Math.random() * CONFIG.colorPalette.length);
-      this.nextColorIndex = (this.colorIndex + 1) % CONFIG.colorPalette.length;
-      this.colorTransition = 0;
-      
-      // Индивидуальное время
-      this.timeOffset = Math.random() * 10;
-    }
-    
-    update(dt, globalTime) {
-      const t = globalTime + this.timeOffset;
-      
-      // Хаотичное движение
-      const noiseX = noise(this.x * 2, t * this.speed, t);
-      const noiseY = noise(t * this.speed, this.y * 2, t);
-      
-      this.vx += noiseX * 0.008 * dt;
-      this.vy += noiseY * 0.008 * dt;
-      
-      // Отталкивание от краев
-      const margin = 0.15;
-      if (this.x < margin) this.vx += (margin - this.x) * 0.3 * dt;
-      if (this.x > 1 - margin) this.vx += (1 - margin - this.x) * 0.3 * dt;
-      if (this.y < margin) this.vy += (margin - this.y) * 0.3 * dt;
-      if (this.y > 1 - margin) this.vy += (1 - margin - this.y) * 0.3 * dt;
-      
-      // Трение
-      this.vx *= 0.98;
-      this.vy *= 0.98;
-      
-      // Движение
-      this.x += this.vx * dt;
-      this.y += this.vy * dt;
-      
-      // Обновление волн
-      this.waves.forEach(wave => {
-        wave.phase += wave.speed * dt;
-      });
-      
-      // Смена цвета
-      this.colorTransition += this.colorSpeed * dt;
-      if (this.colorTransition >= 1) {
-        this.colorTransition = 0;
-        this.colorIndex = this.nextColorIndex;
-        this.nextColorIndex = (this.nextColorIndex + 1) % CONFIG.colorPalette.length;
-      }
-    }
-    
-    getCurrentColor() {
-      const color1 = CONFIG.colorPalette[this.colorIndex];
-      const color2 = CONFIG.colorPalette[this.nextColorIndex];
-      const t = this.colorTransition;
-      
-      return {
-        h: color1.h + (color2.h - color1.h) * t,
-        s: color1.s + (color2.s - color1.s) * t,
-        l: color1.l + (color2.l - color1.l) * t
-      };
-    }
-    
-    draw(ctx, width, height, globalTime) {
-      const cx = this.x * width;
-      const cy = this.y * height;
-      const baseR = Math.min(width, height) * this.baseRadius;
-      
-      // "Дыхание"
-      const breathing = 1 + Math.sin(globalTime * 0.7 + this.timeOffset) * 0.15;
-      
-      const color = this.getCurrentColor();
-      
-      ctx.save();
-      
-      // Рисуем форму
-      ctx.beginPath();
-      
-      const steps = 60;
-      for (let i = 0; i <= steps; i++) {
-        const angle = (i / steps) * TAU;
-        
-        let radius = baseR * breathing;
-        
-        // Применяем волны
-        this.waves.forEach(wave => {
-          const waveValue = Math.sin(angle * wave.frequency + wave.phase);
-          radius += waveValue * wave.amplitude * baseR * 0.3;
-        });
-        
-        const x = cx + Math.cos(angle) * radius;
-        const y = cy + Math.sin(angle) * radius;
-        
-        if (i === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      }
-      
-      ctx.closePath();
-      
-      // Градиент
-      const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, baseR * breathing * 1.8);
-      gradient.addColorStop(0, `hsla(${color.h}, ${color.s}%, ${color.l}%, 0.4)`);
-      gradient.addColorStop(0.7, `hsla(${color.h}, ${color.s}%, ${color.l * 0.8}%, 0.2)`);
-      gradient.addColorStop(1, `hsla(${color.h}, ${color.s}%, ${color.l * 0.6}%, 0)`);
-      
-      ctx.fillStyle = gradient;
-      ctx.fill();
-      
-      // Внутреннее свечение
-      ctx.globalCompositeOperation = 'screen';
-      const innerGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, baseR * breathing * 0.6);
-      innerGrad.addColorStop(0, `hsla(${color.h}, ${Math.min(100, color.s + 20)}%, ${Math.min(100, color.l + 10)}%, 0.3)`);
-      innerGrad.addColorStop(1, `hsla(${color.h}, ${color.s}%, ${color.l}%, 0)`);
-      ctx.fillStyle = innerGrad;
-      ctx.fill();
-      
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.restore();
-    }
-  }
-
-  // Создаем кляксы
-  const blobs = Array.from({ length: CONFIG.blobCount }, () => new Blob());
-
-  // Функции
-  function resize() {
-    dpr = Math.min(2, window.devicePixelRatio || 1);
-    width = canvas.width = Math.floor(window.innerWidth * dpr);
-    height = canvas.height = Math.floor(window.innerHeight * dpr);
-    canvas.style.width = window.innerWidth + 'px';
-    canvas.style.height = window.innerHeight + 'px';
-  }
-
-  function update(dt) {
-    time += dt * CONFIG.timeScale;
-    blobs.forEach(blob => blob.update(dt, time));
-  }
-
-  function draw() {
-    // Фон с эффектом следа
-    ctx.fillStyle = `rgba(0, 0, 0, ${CONFIG.trailOpacity})`;
-    ctx.fillRect(0, 0, width, height);
-    
-    // Рисуем все кляксы
-    blobs.forEach(blob => blob.draw(ctx, width, height, time));
-  }
-
-  // Анимационный цикл
-  let lastTime = performance.now();
-  function animate(currentTime) {
-    const dt = Math.min((currentTime - lastTime) / 1000, 0.033);
-    lastTime = currentTime;
-    
-    update(dt);
-    draw();
-    
-    requestAnimationFrame(animate);
-  }
-
-  // Инициализация
-  window.addEventListener('resize', resize, { passive: true });
-  resize();
-  
-  // Запуск анимации
-  requestAnimationFrame(animate);
-
-  // Обработка видимости страницы
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      lastTime = performance.now();
-    }
-  });
-})();
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<script type="text/babel" data-presets="react" src="./goo_aura_react_web_gl_glow_blob_that_morphs_and_shifts_colors.jsx"></script>
+<script type="text/babel" data-presets="react">
+  const rootElement = document.getElementById('root');
+  const root = ReactDOM.createRoot(rootElement);
+  root.render(
+    <GooAura
+      style={{ width: '100%', height: '100%' }}
+      speed={1}
+      spikes={0.6}
+      blobs={5}
+    />
+  );
 </script>
 
 </body>
