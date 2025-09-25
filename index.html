@@ -50,66 +50,108 @@
 <script>
   // Fallback if CDN fails or offline
   if (!window.React || !window.ReactDOM) {
-    console.warn('React CDN failed, loading fallback canvas animation');
-    document.addEventListener('DOMContentLoaded', function() {
+    document.addEventListener('DOMContentLoaded', () => {
       const root = document.getElementById('root');
       if (!root) return;
-      
-      const canvas = document.createElement('canvas');
-      canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border-radius:16px;';
-      root.appendChild(canvas);
-      
-      const ctx = canvas.getContext('2d');
-      let animId;
-      
-      function resize() {
-        const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-        canvas.width = root.clientWidth * dpr;
-        canvas.height = root.clientHeight * dpr;
-      }
-      
-      function animate() {
-        const w = canvas.width, h = canvas.height;
-        const t = performance.now() * 0.001;
-        
-        ctx.fillStyle = 'rgba(0,0,0,0.1)';
-        ctx.fillRect(0, 0, w, h);
-        
-        const cx = w * 0.5, cy = h * 0.5, r = Math.min(w, h) * 0.2;
-        const g = ctx.createRadialGradient(cx, cy, r*0.1, cx, cy, r*1.5);
-        g.addColorStop(0, '#ffd400');
-        g.addColorStop(0.6, '#ff7a00');
-        g.addColorStop(0.8, '#d400a6');
-        g.addColorStop(1, 'rgba(0,0,0,0)');
-        
-        ctx.globalCompositeOperation = 'lighter';
-        for (let i = 0; i < 5; i++) {
-          ctx.save();
-          ctx.translate(cx, cy);
-          ctx.rotate(t * 0.3 + i * 1.2);
-          ctx.translate(Math.sin(t * 0.7 + i) * r * 0.3, Math.cos(t * 0.9 + i) * r * 0.3);
-          ctx.fillStyle = g;
-          ctx.beginPath();
-          ctx.arc(0, 0, r * (0.8 + 0.2 * Math.sin(t + i)), 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
-        }
-        ctx.globalCompositeOperation = 'source-over';
-        
-        animId = requestAnimationFrame(animate);
-      }
-      
-      window.addEventListener('resize', resize);
-      resize();
-      animate();
-      
-      document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-          cancelAnimationFrame(animId);
-        } else {
+
+      const runCanvasFallback = () => {
+        console.warn('React CDN failed, loading lightweight canvas fallback');
+        root.textContent = '';
+        const canvas = document.createElement('canvas');
+        canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border-radius:16px;';
+        root.appendChild(canvas);
+
+        const ctx = canvas.getContext('2d');
+        let animId = 0;
+
+        const resize = () => {
+          const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+          canvas.width = root.clientWidth * dpr;
+          canvas.height = root.clientHeight * dpr;
+        };
+
+        const animate = () => {
+          const w = canvas.width;
+          const h = canvas.height;
+          const t = performance.now() * 0.001;
+
+          ctx.fillStyle = 'rgba(0,0,0,0.14)';
+          ctx.fillRect(0, 0, w, h);
+
+          const cx = w * 0.5;
+          const cy = h * 0.5;
+          const r = Math.min(w, h) * 0.22;
+          const g = ctx.createRadialGradient(cx, cy, r * 0.1, cx, cy, r * 1.5);
+          g.addColorStop(0, '#ffd400');
+          g.addColorStop(0.6, '#ff7a00');
+          g.addColorStop(0.82, '#d400a6');
+          g.addColorStop(1, 'rgba(0,0,0,0)');
+
+          ctx.globalCompositeOperation = 'lighter';
+          for (let i = 0; i < 5; i++) {
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate(t * 0.26 + i * 1.18);
+            ctx.translate(Math.sin(t * 0.65 + i) * r * 0.32, Math.cos(t * 0.82 + i) * r * 0.28);
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(0, 0, r * (0.8 + 0.18 * Math.sin(t * 0.9 + i)), 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+          ctx.globalCompositeOperation = 'source-over';
+
           animId = requestAnimationFrame(animate);
+        };
+
+        const onVis = () => {
+          if (document.hidden) {
+            cancelAnimationFrame(animId);
+          } else {
+            animId = requestAnimationFrame(animate);
+          }
+        };
+
+        window.addEventListener('resize', resize);
+        resize();
+        animate();
+
+        document.addEventListener('visibilitychange', onVis);
+
+        window.__gooAuraUnmount = () => {
+          cancelAnimationFrame(animId);
+          window.removeEventListener('resize', resize);
+          document.removeEventListener('visibilitychange', onVis);
+          if (canvas.parentNode === root) {
+            root.removeChild(canvas);
+          }
+        };
+      };
+
+      const tryMount = (attempt = 0) => {
+        if (typeof window.mountGooAura === 'function') {
+          console.warn('React CDN failed, mounting GooAura without React');
+          if (window.__gooAuraUnmount) {
+            window.__gooAuraUnmount();
+          }
+          window.__gooAuraUnmount = window.mountGooAura(root, {
+            style: { width: '100%', height: '100%' },
+            speed: 0.6,
+            spikes: 0.25,
+            blobs: 5,
+            hueSpeed: 0.05,
+            centerPull: 0.65,
+          });
+          return;
         }
-      });
+        if (attempt >= 10) {
+          runCanvasFallback();
+          return;
+        }
+        setTimeout(() => tryMount(attempt + 1), 100);
+      };
+
+      tryMount();
     });
   }
 </script>
@@ -121,19 +163,40 @@
     
     if (window.React && window.ReactDOM && window.GooAura) {
       try {
+        if (window.__gooAuraUnmount) {
+          window.__gooAuraUnmount();
+          window.__gooAuraUnmount = null;
+        }
         const root = ReactDOM.createRoot(rootElement);
         root.render(
           React.createElement(window.GooAura, {
             style: { width: '100%', height: '100%' },
-            speed: 1,
-            spikes: 0.6,
+            speed: 0.6,
+            spikes: 0.25,
             blobs: 5,
+            hueSpeed: 0.05,
+            centerPull: 0.65,
           })
         );
+        window.__gooAuraUnmount = () => root.unmount();
         console.log('GooAura React component loaded successfully');
+        return;
       } catch (err) {
         console.warn('React render failed:', err);
       }
+    }
+
+    if (typeof window.mountGooAura === 'function') {
+      console.log('Mounting GooAura without React');
+      if (window.__gooAuraUnmount) window.__gooAuraUnmount();
+      window.__gooAuraUnmount = window.mountGooAura(rootElement, {
+        style: { width: '100%', height: '100%' },
+        speed: 0.6,
+        spikes: 0.25,
+        blobs: 5,
+        hueSpeed: 0.05,
+        centerPull: 0.65,
+      });
     } else {
       console.log('Using fallback canvas animation');
     }
