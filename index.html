@@ -8,6 +8,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Calm Flow</title>
+<meta name="theme-color" content="#000000">
 <style>
 html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#000; }
   body { overscroll-behavior:none; color-scheme: dark; }
@@ -31,6 +32,8 @@ html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#0
 </head>
 <body>
 <canvas id="c"></canvas>
+<button id="pp" aria-label="Pause/Play">⏯</button>
+
 
   
 <script>
@@ -43,40 +46,38 @@ html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#0
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
    const TAU = Math.PI * 2;
 
-  // ——— Параметры спокойной анимации ———
+  // ——— Параметры «кляксы» в духе Я.Музыки ———
   const CFG = {
-    timeScale: 0.38,     // глобальное замедление времени
-    baseScale: 0.38,
-    steps: 160,
-    morph: 0.30,
-    breath: 0.065,
-    maskBlur: 28,
+    timeScale: 0.40,
+    steps: 220,              // дискретизация контура
+    baseScale: 0.42,         // радиус базовый
+    breath: 0.07,            // дыхание
+    edgeNoise: 0.06,         // высокочастотная рябь по контуру
+    maskBlur: 28,            // мягкий край
     maskContrast: 130,
-    trail: 0.052,        // чуть меньший шлейф
+    trail: 0.055,            // шлейф фона
 
-    // плавное блуждание центра
-    flowK: 1.25,
-    flowSpeed: 0.22,
-    centerDrift: 55,     // было ~115
-    centerFriction: 0.92,
+    // плавный дрейф центра по curl-полю
+    flowK: 1.25, flowSpeed: 0.22,
+    centerDrift: 60, centerFriction: 0.92,
 
-    // форма-«щупальца»
-    lobesCount: 7,
-    lobeSpinRange: 0.12, // медленнее
-    lobeEase: 0.10,      // сглаживание амплитуды
+    // «особенности» контура: выпуклости и вдавлины (метакочки)
+    features: 14,                 // сколько «узлов» по кругу
+    featSpinRange: 0.18,          // скорость вращения узлов
+    featWidth: [0.10, 0.38],      // «ширина» влияния по углу (сигма)
+    featAmp:   [0.35, 1.35],      // амплитуда
+    dentRatio: 0.45,              // доля вдавлин (negative amplitude)
+    featEase:  0.12,              // сглаживание амплитуды
 
-    // мягкие «краски» внутри
-    dyes: 36,
-    dyeRadius: [0.48, 0.85],
-    hueBase: 210, hueSpan: 170,
-    hueJitter: 6,        // медленная смена оттенков
-    dyeFriction: 0.90,   // инерция
-    dyeFlowScale: 60,    // скорость течения пятен
-    streaksPerFrame: 0   // без «лучей» для релакса
+    // мягкие «краски»
+    dyes: 40,
+    dyeRadius: [0.45, 0.90],
+    hueBase: 210, hueSpan: 170, hueJitter: 6,
+    dyeFriction: 0.90, dyeFlowScale: 60
   };
 
   // понижение разрешения offscreen ради blur/contrast
-  let SCALE = 0.66; // 66% от экрана, можно 0.5 на слабых устройствах
+  let SCALE = 0.66; // можно 0.5 на слабых девайсах
   
   // offscreen
   const mask = document.createElement('canvas'); const mx = mask.getContext('2d');
@@ -123,14 +124,20 @@ html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#0
   // ——— состояние: центр с инерцией ———
   let center = { x: w*0.5, y: h*0.5, vx:0, vy:0 };
 
-  // щупальца/впадины
-  const lobes = Array.from({length: CFG.lobesCount}, () => ({
-    ang: Math.random()*TAU,
-    amp: 0.5 + Math.random()*1.2,
-    ampSm: 0,                       // сглаженная амплитуда
-    width: 0.22 + Math.random()*0.38,
-    spin: (Math.random()*2-1)*CFG.lobeSpinRange
-  }));
+  // ——— «особенности» контура: выпуклости (+1) и вдавлины (−1) ———
+  const feats = Array.from({length: CFG.features}, (_,i) => {
+    const isDent = (i / CFG.features) < CFG.dentRatio;
+    const ampMin = CFG.featAmp[0], ampMax = CFG.featAmp[1];
+    const width  = CFG.featWidth[0] + Math.random()*(CFG.featWidth[1]-CFG.featWidth[0]);
+    return {
+      sign: isDent ? -1 : +1,
+      ang: Math.random()*TAU,
+      amp: ampMin + Math.random()*(ampMax-ampMin),
+      ampSm: 0,
+      width,
+      spin: (Math.random()*2-1)*CFG.featSpinRange
+    };
+  });
 
   // «краски» с инерцией
   const dyes = Array.from({length: CFG.dyes}, (_,i)=>({
@@ -142,17 +149,19 @@ html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#0
     hueAdd: Math.random()*20-10
   }));
 
-  // форма одной сущности
+  // профиль радиуса: базовый + сумма выпуклостей и вдавлин + мелкая «рябь»
   function radiusAt(th, R0, time){
-    const u = th*2.3 + 0.6*Math.sin(th*3.7 + time*0.5);
-    const v = th*4.1 - 0.4*Math.sin(th*2.0 - time*0.4);
-    const m = (Math.sin(u + time*0.4) + 0.6*Math.sin(v - time*0.3) + 0.3*Math.sin(th*6.2 + time*0.2))*0.5;
-    let spikes = 0;
-    for(const l of lobes){
-      const d = Math.atan2(Math.sin(th-l.ang), Math.cos(th-l.ang));
-      spikes += l.ampSm * Math.exp(-(d*d)/(2*l.width*l.width));
+    // дыхание
+    const breath = 1 + Math.sin(time*0.8)*CFG.breath*0.5 + Math.sin(time*0.47+1.1)*CFG.breath*0.5;
+    let delta = 0;
+    for(const f of feats){
+      const d = Math.atan2(Math.sin(th-f.ang), Math.cos(th-f.ang));        // угол-разность в (−π..π)
+      const g = Math.exp(-(d*d)/(2*f.width*f.width));                      // гаусс по углу
+      delta += f.sign * f.ampSm * g;
     }
-    return R0 * (1 + CFG.morph*m + 0.18*spikes);
+    // мелкая волна для «живости» кромки
+    const ripple = CFG.edgeNoise * Math.sin(th*12 + time*0.9) + CFG.edgeNoise*0.6 * Math.sin(th*7.1 - time*0.7);
+    return R0 * (breath + 0.18*delta + ripple);
   }
 
   // динамика (замедленная + сглаженная)
@@ -168,11 +177,11 @@ html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#0
     center.x  += center.vx * dt;
     center.y  += center.vy * dt;
 
-    // щупальца — медленное плавное вращение и сглаживание амплитуды
-    for(const l of lobes){
-      l.ang += l.spin * dt;
-      const target = l.amp * (0.7 + 0.3*Math.sin(time*0.25 + l.width*5));
-      l.ampSm += (target - l.ampSm) * CFG.lobeEase * dt * 12; // easing
+    // «особенности» — вращение и плавное перетекание амплитуды
+    for(const ftr of feats){
+      ftr.ang += ftr.spin * dt;
+      const target = ftr.amp * (0.75 + 0.25*Math.sin(time*0.22 + ftr.width*6.0));
+      ftr.ampSm += (target - ftr.ampSm) * CFG.featEase * dt * 12;
     }
 
     // краски — инерция + слабый поток + пружина к центру
@@ -193,7 +202,7 @@ html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#0
   function buildMask(time){
     const sx = cw / w, sy = ch / h;
     const cx = center.x * sx, cy = center.y * sy;
-    const R0 = Math.min(cw,ch)*CFG.baseScale * (1 + Math.sin(time*0.8)*CFG.breath*0.5 + Math.sin(time*0.47+1.1)*CFG.breath*0.5);
+    const R0 = Math.min(cw,ch)*CFG.baseScale;
     mx.globalCompositeOperation = 'source-over';
     mx.clearRect(0,0,cw,ch);
     mx.beginPath();
@@ -225,7 +234,7 @@ html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#0
       const rr = Rb * d.r;
       const g = cx2.createRadialGradient(x,y, rr*0.06, x,y, rr);
       const hue = (d.hue0 + d.hueAdd) % 360;
-      g.addColorStop(0.0, `hsla(${hue}, 92%, 60%, 0.32)`); // чуть ниже яркость
+      g.addColorStop(0.0, `hsla(${hue}, 92%, 60%, 0.32)`);
       g.addColorStop(1.0, `hsla(${(hue+38)%360}, 80%, 40%, 0.02)`);
       cx2.globalCompositeOperation='screen';
       cx2.fillStyle=g;
@@ -267,7 +276,6 @@ html, body, canvas { margin:0; padding:0; width:100%; height:100%; background:#0
   addEventListener('keydown', (e)=>{ if(e.code==='Space'||e.code==='KeyP'){ e.preventDefault(); toggle(); }});
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && !paused) toggle();
-    else if (!document.hidden && paused) toggle();
   });
   if (prefersReduced) {
     paused = true;
