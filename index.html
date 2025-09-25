@@ -27,7 +27,8 @@
 <!--<div id="hint">Tip: Add to Home Screen for fullscreen · Tap to pause/play</div>-->
 
 
- <script>
+  
+<script>
 (function () {
   const c = document.getElementById('c');
   const ctx = c.getContext('2d');
@@ -35,109 +36,141 @@
   let w, h, dpr = 1, paused = false, t = 0;
   const TAU = Math.PI * 2;
 
-  // ---------- настройки ----------
+  // ——— Параметры спокойной анимации ———
   const CFG = {
-    // форма + движение
-    baseScale: 0.38,        // размер от min(w,h)
-    steps: 160,             // детализация контура
-    morph: 0.34,            // насколько «рваная» форма (0..0.45)
-    breath: 0.10,           // пульс
-    maskBlur: 26,           // мягкость края
-    maskContrast: 135,
-    centerDrift: 115,       // блуждание центра (px/с)
-    flowK: 1.6,             // частота поля
-    flowSpeed: 0.48,        // скорость поля
+    timeScale: 0.38,     // глобальное замедление времени
+    baseScale: 0.38,
+    steps: 160,
+    morph: 0.30,
+    breath: 0.065,
+    maskBlur: 28,
+    maskContrast: 130,
+    trail: 0.052,        // чуть меньший шлейф
 
-    // внутренний цвет (много больших пятен + «струи»)
-    dyes: 46,               // сколько цвет-пятен
-    dyeRadius: [0.42, 0.82],// мин/макс относительно Rbase
+    // плавное блуждание центра
+    flowK: 1.25,
+    flowSpeed: 0.22,
+    centerDrift: 55,     // было ~115
+    centerFriction: 0.92,
+
+    // форма-«щупальца»
+    lobesCount: 7,
+    lobeSpinRange: 0.12, // медленнее
+    lobeEase: 0.10,      // сглаживание амплитуды
+
+    // мягкие «краски» внутри
+    dyes: 36,
+    dyeRadius: [0.48, 0.85],
     hueBase: 210, hueSpan: 170,
-    hueJitter: 22,          // локальная смена оттенка (°/с)
-    streaksPerFrame: 6,     // тонкие «лучи»
-    trail: 0.075            // шлейф фона (0..0.12)
+    hueJitter: 6,        // медленная смена оттенков
+    dyeFriction: 0.90,   // инерция
+    dyeFlowScale: 60,    // скорость течения пятен
+    streaksPerFrame: 0   // без «лучей» для релакса
   };
 
-  // --- offscreen ---
-  const mask = document.createElement('canvas');   const mx  = mask.getContext('2d');
-  const col  = document.createElement('canvas');   const cx2 = col.getContext('2d');
+  // offscreen
+  const mask = document.createElement('canvas'); const mx = mask.getContext('2d');
+  const col  = document.createElement('canvas'); const cx2 = col.getContext('2d');
 
-  function resize() {
+  function resize(){
     dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-    w = c.width  = Math.floor(innerWidth  * dpr);
-    h = c.height = Math.floor(innerHeight * dpr);
-    c.style.width = innerWidth + 'px';  c.style.height = innerHeight + 'px';
+    w = c.width  = Math.floor(innerWidth*dpr);
+    h = c.height = Math.floor(innerHeight*dpr);
+    c.style.width = innerWidth+'px'; c.style.height = innerHeight+'px';
     mask.width = col.width = w; mask.height = col.height = h;
   }
   addEventListener('resize', resize, {passive:true}); resize();
 
-  // ---------- шум / curl-noise ----------
-  const fract = x => x - Math.floor(x);
-  const hash  = (x,y)=> fract(Math.sin(x*127.1 + y*311.7)*43758.5453);
+  // ——— шум/flow ———
+  const fract=x=>x-Math.floor(x);
+  const hash=(x,y)=>fract(Math.sin(x*127.1+y*311.7)*43758.5453);
   function noise2(x,y){
     const xi=Math.floor(x), yi=Math.floor(y);
     const xf=x-xi, yf=y-yi, u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
     const n00=hash(xi,yi), n10=hash(xi+1,yi), n01=hash(xi,yi+1), n11=hash(xi+1,yi+1);
     return (1-u)*(1-v)*n00 + u*(1-v)*n10 + (1-u)*v*n01 + u*v*n11;
   }
-  function fbm(x,y){
-    let a=0.5,f=1.0,s=0.0; for(let i=0;i<4;i++){ s+=a*noise2(x*f,y*f); a*=0.5; f*=2.03; } return s;
-  }
-  function curl(nx,ny, time){ // nx,ny ~ 0..1
-    const k = CFG.flowK, e = 0.004;
-    const f = (x,y)=> fbm(k*x + time*CFG.flowSpeed, k*y - time*CFG.flowSpeed*1.17);
-    const dx = (f(nx+e,ny)-f(nx-e,ny))/(2*e);
-    const dy = (f(nx,ny+e)-f(nx,ny-e))/(2*e);
-    return { vx: dy, vy: -dx };
+  function fbm(x,y){ let a=0.5,f=1,s=0; for(let i=0;i<4;i++){s+=a*noise2(x*f,y*f); a*=0.5; f*=2.03;} return s; }
+  function curl(nx,ny,time){
+    const k=CFG.flowK, e=0.004;
+    const f=(x,y)=>fbm(k*x + time*CFG.flowSpeed, k*y - time*CFG.flowSpeed*1.17);
+    const dx=(f(nx+e,ny)-f(nx-e,ny))/(2*e);
+    const dy=(f(nx,ny+e)-f(nx,ny-e))/(2*e);
+    return {vx:dy, vy:-dx};
   }
 
-  // ---------- состояние ----------
-  let center = { x: w*0.5, y: h*0.5 };
+  // ——— состояние: центр с инерцией ———
+  let center = { x: w*0.5, y: h*0.5, vx:0, vy:0 };
 
-  // «локальные импульсы» по углу (дают щупальца/провалы)
-  const lobes = Array.from({length: 7}, ()=>({
+  // щупальца/впадины
+  const lobes = Array.from({length: CFG.lobesCount}, () => ({
     ang: Math.random()*TAU,
     amp: 0.5 + Math.random()*1.2,
-    width: 0.20 + Math.random()*0.45,
-    spin: (Math.random()*2-1)*0.5
+    ampSm: 0,                       // сглаженная амплитуда
+    width: 0.22 + Math.random()*0.38,
+    spin: (Math.random()*2-1)*CFG.lobeSpinRange
   }));
 
-  // много мягких цвет-пятен (большие, чтобы не читались как кружки)
+  // «краски» с инерцией
   const dyes = Array.from({length: CFG.dyes}, (_,i)=>({
     x: center.x + (Math.random()*2-1)*Math.min(w,h)*0.12,
     y: center.y + (Math.random()*2-1)*Math.min(w,h)*0.12,
+    vx: 0, vy: 0,
     r: CFG.dyeRadius[0] + Math.random()*(CFG.dyeRadius[1]-CFG.dyeRadius[0]),
-    hue0: (CFG.hueBase + (i/(CFG.dyes-1)||0)*CFG.hueSpan) % 360,
-    dh: 0, // локальная добавка к тону
-    drift: Math.random()*TAU
+    hue0: (CFG.hueBase + (i/(CFG.dyes-1)||0)*CFG.hueSpan)%360,
+    hueAdd: Math.random()*20-10
   }));
 
-  // ---------- форма сущности ----------
+  // форма одной сущности
   function radiusAt(th, R0, time){
-    // domain-warped шум по углу → очень неравномерный контур
-    const u = th*2.3 + 0.7*Math.sin(th*3.7 + time*0.7);
-    const v = th*4.1 - 0.5*Math.sin(th*2.0 - time*0.9);
-    const m = (Math.sin(u + time*0.8) + 0.6*Math.sin(v - time*0.6) + 0.3*Math.sin(th*6.2 + time*0.33)) * 0.5;
-
-    // «щупальца» — сумма гауссиан по углу
+    const u = th*2.3 + 0.6*Math.sin(th*3.7 + time*0.5);
+    const v = th*4.1 - 0.4*Math.sin(th*2.0 - time*0.4);
+    const m = (Math.sin(u + time*0.4) + 0.6*Math.sin(v - time*0.3) + 0.3*Math.sin(th*6.2 + time*0.2))*0.5;
     let spikes = 0;
     for(const l of lobes){
-      const d = Math.atan2(Math.sin(th-l.ang), Math.cos(th-l.ang)); // -pi..pi
-      spikes += l.amp * Math.exp(-(d*d)/(2*l.width*l.width));
+      const d = Math.atan2(Math.sin(th-l.ang), Math.cos(th-l.ang));
+      spikes += l.ampSm * Math.exp(-(d*d)/(2*l.width*l.width));
     }
     return R0 * (1 + CFG.morph*m + 0.18*spikes);
   }
 
-  function buildMask(time){
-    // центр живёт
-    const flow = curl(center.x/w, center.y/h, time);
-    center.x += flow.vx * CFG.centerDrift * dt;
-    center.y += flow.vy * CFG.centerDrift * dt;
-    center.x += (w*0.5 - center.x) * 0.5 * dt;
-    center.y += (h*0.5 - center.y) * 0.5 * dt;
-    for(const l of lobes){ l.ang += l.spin*dt; }
+  // динамика (замедленная + сглаженная)
+  function stepDynamics(dt, time){
+    // центр — сила от поля + пружина к середине, с трением
+    const f = curl(center.x/w, center.y/h, time);
+    center.vx += f.vx * CFG.centerDrift * dt;
+    center.vy += f.vy * CFG.centerDrift * dt;
+    center.vx += (w*0.5 - center.x) * 0.35 * dt;
+    center.vy += (h*0.5 - center.y) * 0.35 * dt;
+    center.vx *= CFG.centerFriction;
+    center.vy *= CFG.centerFriction;
+    center.x  += center.vx * dt;
+    center.y  += center.vy * dt;
 
-    // путь
-    const R0 = Math.min(w,h) * CFG.baseScale * (1 + Math.sin(time*0.9)*CFG.breath*0.5 + Math.sin(time*0.57+1.2)*CFG.breath*0.5);
+    // щупальца — медленное плавное вращение и сглаживание амплитуды
+    for(const l of lobes){
+      l.ang += l.spin * dt;
+      const target = l.amp * (0.7 + 0.3*Math.sin(time*0.25 + l.width*5));
+      l.ampSm += (target - l.ampSm) * CFG.lobeEase * dt * 12; // easing
+    }
+
+    // краски — инерция + слабый поток + пружина к центру
+    for(const d of dyes){
+      const v = curl(d.x/w, d.y/h, time);
+      d.vx += v.vx * CFG.dyeFlowScale * dt;
+      d.vy += v.vy * CFG.dyeFlowScale * dt;
+      d.vx += (center.x - d.x) * 0.22 * dt;
+      d.vy += (center.y - d.y) * 0.22 * dt;
+      d.vx *= CFG.dyeFriction; d.vy *= CFG.dyeFriction;
+      d.x  += d.vx * dt;       d.y  += d.vy * dt;
+
+      // очень плавная смена оттенка
+      d.hueAdd += (Math.random()*2-1) * CFG.hueJitter * dt * 0.25;
+    }
+  }
+
+  function buildMask(time){
+    const R0 = Math.min(w,h)*CFG.baseScale * (1 + Math.sin(time*0.8)*CFG.breath*0.5 + Math.sin(time*0.47+1.1)*CFG.breath*0.5);
     mx.clearRect(0,0,w,h);
     mx.beginPath();
     for(let i=0;i<=CFG.steps;i++){
@@ -148,92 +181,61 @@
       (i? mx.lineTo(x,y) : mx.moveTo(x,y));
     }
     mx.closePath();
-    mx.fillStyle = '#fff';
+    mx.fillStyle='#fff';
     mx.filter = `blur(${CFG.maskBlur}px) contrast(${CFG.maskContrast}%)`;
     mx.fill();
-    mx.filter = 'none';
+    mx.filter='none';
   }
 
-  // ---------- цвет внутри ----------
   function paintColors(time){
     cx2.clearRect(0,0,w,h);
-    const Rb = Math.min(w,h) * CFG.baseScale;
-
-    // крупные пятна
+    const Rb = Math.min(w,h)*CFG.baseScale;
     for(const d of dyes){
-      const v = curl(d.x/w, d.y/h, time + Math.sin(d.drift)*0.5);
-      d.x += v.vx * 95 * dt; d.y += v.vy * 95 * dt;
-      d.x += (center.x - d.x) * 0.85 * dt; // держим внутри
-      d.y += (center.y - d.y) * 0.85 * dt;
-      d.dh += (Math.random()*2-1) * CFG.hueJitter * dt;
-
       const rr = Rb * d.r;
-      cx2.save();
-      // ориентируем пятно по направлению потока → появляется «течение»
-      const ang = Math.atan2(v.vy, v.vx);
-      cx2.translate(d.x, d.y);
-      cx2.rotate(ang);
-      cx2.scale(1.6, 0.8); // эллипс
-      const g = cx2.createRadialGradient(0,0, rr*0.08, 0,0, rr);
-      const hue = (d.hue0 + d.dh) % 360;
-      g.addColorStop(0.0, `hsla(${hue}, 92%, 62%, 0.36)`);
+      const g = cx2.createRadialGradient(d.x,d.y, rr*0.06, d.x,d.y, rr);
+      const hue = (d.hue0 + d.hueAdd) % 360;
+      g.addColorStop(0.0, `hsla(${hue}, 92%, 60%, 0.32)`); // чуть ниже яркость
       g.addColorStop(1.0, `hsla(${(hue+38)%360}, 80%, 40%, 0.02)`);
-      cx2.globalCompositeOperation = 'screen';
-      cx2.fillStyle = g;
-      cx2.beginPath(); cx2.arc(0,0, rr, 0, TAU); cx2.fill();
-      cx2.restore();
-    }
-
-    // «лучи»/струи — несколько вытянутых мазков поверх
-    for(let i=0;i<CFG.streaksPerFrame;i++){
-      const a = Math.random()*TAU;
-      const r = Rb*(0.35 + Math.random()*0.7);
-      const px = center.x + Math.cos(a)*r*0.6;
-      const py = center.y + Math.sin(a)*r*0.6;
-      const hue = (CFG.hueBase + Math.random()*CFG.hueSpan) % 360;
-      cx2.save();
-      cx2.translate(px, py);
-      cx2.rotate(a + Math.sin(t*0.7)*0.2);
-      cx2.scale(2.2, 0.45);
-      const g = cx2.createRadialGradient(0,0, r*0.02, 0,0, r*0.9);
-      g.addColorStop(0, `hsla(${hue}, 90%, 60%, 0.12)`);
-      g.addColorStop(1, `hsla(${(hue+20)%360}, 80%, 35%, 0.0)`);
-      cx2.globalCompositeOperation = 'screen';
-      cx2.fillStyle = g;
-      cx2.beginPath(); cx2.arc(0,0, r, 0, TAU); cx2.fill();
-      cx2.restore();
+      cx2.globalCompositeOperation='screen';
+      cx2.fillStyle=g;
+      cx2.beginPath(); cx2.arc(d.x,d.y, rr, 0, TAU); cx2.fill();
     }
   }
 
-  // ---------- цикл ----------
-  let prev = performance.now(), dt = 0.016;
+  // цикл
+  let prev = performance.now();
   function frame(now){
-    if (paused) return;
-    dt = Math.min(0.033, (now - prev)/1000); prev = now; t += dt;
+    if(paused) return;
+    const rawDt = Math.min(0.033, (now - prev)/1000);
+    prev = now;
+    const dt = rawDt * CFG.timeScale;
+    t += dt;
 
     // фон/шлейф
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = `rgba(0,0,0,${CFG.trail})`;
+    ctx.globalCompositeOperation='source-over';
+    ctx.globalAlpha=1;
+    ctx.fillStyle=`rgba(0,0,0,${CFG.trail})`;
     ctx.fillRect(0,0,w,h);
 
+    stepDynamics(dt, t);
     buildMask(t);
     paintColors(t);
 
-    // обрезаем цвет одной маской → одна сущность
-    cx2.globalCompositeOperation = 'destination-in';
-    cx2.drawImage(mask, 0, 0);
-    cx2.globalCompositeOperation = 'screen';
-    ctx.drawImage(col, 0, 0);
+    cx2.globalCompositeOperation='destination-in';
+    cx2.drawImage(mask,0,0);
+    cx2.globalCompositeOperation='screen';
+    ctx.drawImage(col,0,0);
 
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
-  function toggle(){ paused = !paused; if(!paused){ prev = performance.now(); requestAnimationFrame(frame);} }
-  addEventListener('touchstart', toggle); addEventListener('mousedown', toggle);
+  function toggle(){ paused=!paused; if(!paused){ prev=performance.now(); requestAnimationFrame(frame);} }
+  addEventListener('touchstart', toggle);
+  addEventListener('mousedown', toggle);
 })();
 </script>
+
 
 
 
