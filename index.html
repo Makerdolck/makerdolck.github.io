@@ -26,176 +26,190 @@
 <canvas id="c"></canvas>
 <!--<div id="hint">Tip: Add to Home Screen for fullscreen · Tap to pause/play</div>-->
 
-<script>
+
+  <script>
 (function(){
   const c = document.getElementById('c');
   const ctx = c.getContext('2d');
-  let w, h, dpr, paused = false, t = 0;
-  const TAU = Math.PI * 2;
 
-  // --- настройки ---
+  let w, h, dpr, paused=false, t=0;
+  const TAU = Math.PI*2;
+
+  // --- настройки (можно крутить) ---
   const CFG = {
-    count: 5,             // клякс
-    baseScale: 0.34,      // размер кляксы относительно min(w,h)
-    trail: 0.06,          // сила шлейфа (0..0.12)
-    morph: 0.20,          // «рваность» контура
-    steps: 95,            // детализация контура
-    repel: 0.012,         // сила взаимного отталкивания
-    centerPull: 0.002,    // притяжение к центру
-    jitter: 0.0025        // лёгкий шум/случайность движения
+    count: 5,          // сколько клякс
+    baseScale: 0.34,   // размер кляксы от min(w,h)
+    trail: 0.06,       // сила шлейфа
+    morph: 0.22,       // «рваность» контура
+    steps: 85,         // детализация контура
+    repel: 0.012,      // взаимное отталкивание
+    centerPull: 0.0018,// притяжение к центру
+    jitter: 0.003,     // живой шум движения
+    gooBlur: 24,       // размытие маски (px)
+    gooContrast: 140,  // контраст маски (%)
+    mixMode: 'screen'  // режим смешения цветов: 'screen' | 'lighter'
   };
+
+  // offscreen-канвасы: для формы (shape), размытой маски (mask) и цвета (col)
+  const shape = document.createElement('canvas');
+  const shx = shape.getContext('2d');
+  const mask  = document.createElement('canvas');
+  const mx = mask.getContext('2d');
+  const col = document.createElement('canvas');
+  const cx2 = col.getContext('2d');
 
   function resize(){
     dpr = Math.max(1, Math.min(2, devicePixelRatio||1));
     w = c.width  = Math.floor(innerWidth * dpr);
     h = c.height = Math.floor(innerHeight * dpr);
-    c.style.width = innerWidth+'px';
-    c.style.height = innerHeight+'px';
+    c.style.width  = innerWidth + 'px';
+    c.style.height = innerHeight + 'px';
+
+    for(const cnv of [shape,mask,col]){
+      cnv.width = w; cnv.height = h;
+      cnv.style = ''; // no CSS size for offscreens
+    }
   }
   addEventListener('resize', resize, {passive:true});
   resize();
 
-  // --- инициализация клякс ---
-  const blobs = Array.from({length: CFG.count}, (_,i) => {
+  // --- кляксы с физикой ---
+  const blobs = Array.from({length: CFG.count}, (_,i)=>{
     const a = i/CFG.count*TAU;
     const R = Math.min(w,h)*0.28;
     return {
-      x: w*0.5 + Math.cos(a)*R*0.5,
-      y: h*0.5 + Math.sin(a)*R*0.35,
+      x: w*0.5 + Math.cos(a)*R*0.45,
+      y: h*0.5 + Math.sin(a)*R*0.32,
       vx: 0, vy: 0,
       r: 0.9 + Math.random()*0.35,
-      hue: (i*75 + 200 + Math.random()*30)%360,
+      hue: (i*75 + 200 + Math.random()*35)%360,
       k1: 2 + (i%2), k2: 3 + ((i+1)%2), k3: 5 + (i%3),
-      depthPhase: Math.random()*TAU,         // для смены порядка рисования
-      speed: 0.4 + Math.random()*0.5
+      phase: Math.random()*TAU,
+      speed: 0.45 + Math.random()*0.5
     };
   });
 
-  // сглаженный случайный шум (простой 1D-веллю-нойз)
-  function sRand(seed){
-    const n = Math.sin(seed*127.1)*43758.5453;
-    return n - Math.floor(n);
-  }
-  function noise1D(x){ // 0..1
-    const i = Math.floor(x), f = x - i;
-    const a = sRand(i), b = sRand(i+1);
-    return a + (b-a)*(f*f*(3-2*f)); // smoothstep
-  }
+  // простенький гладкий шум для «живости»
+  function sRand(n){ const x=Math.sin(n*127.1)*43758.5453; return x-Math.floor(x); }
+  function noise1D(x){ const i=Math.floor(x), f=x-i, a=sRand(i), b=sRand(i+1); return a+(b-a)*(f*f*(3-2*f)); }
 
-  function stepPhysics(dt){
-    // силы
+  function physics(dt){
     for(let i=0;i<blobs.length;i++){
-      const bi = blobs[i];
-
-      // тяга к центру
-      const cx = w*0.5, cy = h*0.5;
-      bi.vx += (cx - bi.x) * CFG.centerPull * dt;
-      bi.vy += (cy - bi.y) * CFG.centerPull * dt;
-
-      // лёгкий «живой» шум траектории
-      const t1 = t*bi.speed + i*10;
-      bi.vx += (noise1D(t1*0.7)-0.5)*CFG.jitter*w*dt;
-      bi.vy += (noise1D(t1*0.9+100)-0.5)*CFG.jitter*h*dt;
+      const b=blobs[i];
+      // притяжение к центру
+      const cx=w*0.5, cy=h*0.5;
+      b.vx += (cx-b.x)*CFG.centerPull*dt;
+      b.vy += (cy-b.y)*CFG.centerPull*dt;
+      // шум
+      const t1=t*b.speed+i*10;
+      b.vx += (noise1D(t1*0.7)-0.5)*CFG.jitter*w*dt;
+      b.vy += (noise1D(t1*0.9+100)-0.5)*CFG.jitter*h*dt;
     }
-
-    // взаимное отталкивание
+    // отталкивание
     for(let i=0;i<blobs.length;i++){
       for(let j=i+1;j<blobs.length;j++){
-        const a = blobs[i], b = blobs[j];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const d2 = dx*dx + dy*dy + 1e-6;
-        const d = Math.sqrt(d2);
-        const force = CFG.repel / d2; // чем ближе — тем сильнее
-        const fx = force * dx, fy = force * dy;
-        a.vx -= fx; a.vy -= fy;
-        b.vx += fx; b.vy += fy;
+        const a=blobs[i], b=blobs[j];
+        const dx=b.x-a.x, dy=b.y-a.y, d2=dx*dx+dy*dy+1e-6, d=Math.sqrt(d2);
+        const f=CFG.repel/d2;
+        const fx=f*dx, fy=f*dy;
+        a.vx-=fx; a.vy-=fy; b.vx+=fx; b.vy+=fy;
       }
     }
-
-    // интеграция + лёгкое затухание скорости
     for(const b of blobs){
-      b.vx *= 0.985; b.vy *= 0.985;
-      b.x  += b.vx * dt * 60;
-      b.y  += b.vy * dt * 60;
+      b.vx*=0.985; b.vy*=0.985;
+      b.x+=b.vx*dt*60; b.y+=b.vy*dt*60;
     }
   }
 
+  // «органический» радиус
   function radiusAt(theta, base, b){
-    const m = CFG.morph;
-    return base * (
-      1
-      + m*0.55*Math.sin(theta*b.k1 + t*0.9*b.speed + b.depthPhase*0.5)
+    const m=CFG.morph;
+    return base*(1
+      + m*0.55*Math.sin(theta*b.k1 + t*0.9*b.speed + b.phase*0.5)
       + m*0.30*Math.sin(theta*b.k2 - t*0.6*b.speed)
-      + m*0.15*Math.sin(theta*b.k3 + t*0.3)
-    );
+      + m*0.15*Math.sin(theta*b.k3 + t*0.3));
   }
 
-  function drawBlob(b){
-    const Rbase = Math.min(w,h) * CFG.baseScale * b.r;
-
-    // мягкий градиент без «пересвета»
-    const hue = (b.hue + Math.sin(t*0.5 + b.depthPhase)*16) % 360;
-    const grad = ctx.createRadialGradient(b.x, b.y, Rbase*0.12, b.x, b.y, Rbase*1.05);
-    grad.addColorStop(0.0, `hsla(${hue}, 85%, 62%, 0.33)`);
-    grad.addColorStop(1.0, `hsla(${(hue+36)%360}, 80%, 40%, 0.03)`);
-
-    ctx.fillStyle = grad;
-    ctx.globalAlpha = 0.85;
-
-    // контур кляксы
-    const steps = CFG.steps;
+  function pathBlob(ctx, b, base){
+    const N=CFG.steps;
     ctx.beginPath();
-    for(let i=0;i<=steps;i++){
-      const th = (i/steps)*TAU;
-      const r  = radiusAt(th, Rbase, b);
-      const x  = b.x + Math.cos(th)*r;
-      const y  = b.y + Math.sin(th)*r;
-      (i? ctx.lineTo(x,y) : ctx.moveTo(x,y));
+    for(let i=0;i<=N;i++){
+      const th=(i/N)*TAU, r=radiusAt(th, base, b);
+      const x=b.x+Math.cos(th)*r, y=b.y+Math.sin(th)*r;
+      (i?ctx.lineTo(x,y):ctx.moveTo(x,y));
     }
     ctx.closePath();
-    ctx.fill();
   }
 
-  let prev = performance.now();
+  function buildMaskAndColor(){
+    shx.clearRect(0,0,w,h);
+    cx2.clearRect(0,0,w,h);
+
+    // 1) crisp формы в shape и цвет в col
+    const order = blobs.slice().sort((a,b)=> (a.phase%TAU)-(b.phase%TAU)); // немного перемешиваем порядок
+    for(const b of order){
+      const Rbase = Math.min(w,h)*CFG.baseScale*b.r;
+
+      // shape (белым)
+      shx.fillStyle = '#fff';
+      pathBlob(shx, b, Rbase);
+      shx.fill();
+
+      // color (мягкий радиальный градиент)
+      const hue = (b.hue + Math.sin(t*0.5 + b.phase)*16)%360;
+      const grad = cx2.createRadialGradient(b.x, b.y, Rbase*0.12, b.x, b.y, Rbase*1.05);
+      grad.addColorStop(0,   `hsla(${hue}, 85%, 62%, 0.33)`);
+      grad.addColorStop(1,   `hsla(${(hue+36)%360}, 80%, 40%, 0.03)`);
+      cx2.globalCompositeOperation = CFG.mixMode; // 'screen' по умолчанию
+      cx2.fillStyle = grad;
+      pathBlob(cx2, b, Rbase);
+      cx2.fill();
+    }
+
+    // 2) размытая маска (shape -> mask с фильтром blur+contrast)
+    mx.clearRect(0,0,w,h);
+    mx.filter = `blur(${CFG.gooBlur}px) contrast(${CFG.gooContrast}%)`;
+    mx.drawImage(shape, 0, 0);
+    mx.filter = 'none';
+
+    // 3) обрезаем цвет маской (col = col ∩ mask)
+    cx2.globalCompositeOperation = 'destination-in';
+    cx2.drawImage(mask, 0, 0);
+    // восстановим режим для следующего кадра
+    cx2.globalCompositeOperation = CFG.mixMode;
+  }
+
+  let prev=performance.now();
   function frame(now){
     if(paused) return;
-    const dt = Math.min(0.033, (now - prev)/1000); // защита от рывков
-    prev = now;
-    t += dt;
+    const dt=Math.min(0.033,(now-prev)/1000); prev=now; t+=dt;
 
-    // шлейф
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = `rgba(0,0,0,${CFG.trail})`;
+    // фон/шлейф
+    ctx.globalCompositeOperation='source-over';
+    ctx.globalAlpha=1;
+    ctx.fillStyle=`rgba(0,0,0,${CFG.trail})`;
     ctx.fillRect(0,0,w,h);
 
-    // меняем порядок рисования (глубину) плавно — кто-то сверху, кто-то снизу
-    const order = blobs.slice().sort((a,b)=>{
-      const za = Math.sin(a.depthPhase + t*0.6)*0.5 + 0.5;
-      const zb = Math.sin(b.depthPhase + t*0.6)*0.5 + 0.5;
-      return za - zb;
-    });
+    // строим маску и цвет на offscreen
+    buildMaskAndColor();
 
-    // обычное наложение: кляксы реально перекрывают друг друга
-    ctx.globalCompositeOperation = 'source-over';
-    for(const b of order) drawBlob(b);
+    // рисуем готовую «жидкую» картинку
+    ctx.drawImage(col, 0, 0);
 
-    stepPhysics(dt);
+    physics(dt);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
   function toggle(){
-    paused = !paused;
-    if(!paused){
-      prev = performance.now();
-      requestAnimationFrame(frame);
-    }
+    paused=!paused;
+    if(!paused){ prev=performance.now(); requestAnimationFrame(frame); }
   }
   addEventListener('touchstart', toggle);
   addEventListener('mousedown', toggle);
 })();
 </script>
+
 
 
   
